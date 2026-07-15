@@ -1,1 +1,1180 @@
 
+# 코드 설명 및 클래스 구현 순서
+
+## 1. 개발 방식
+
+이 모드는 모든 클래스를 한꺼번에 만든 뒤 테스트하지 않는다.
+
+Visual Studio에서 클래스를 하나씩 추가하고, 해당 클래스의 테스트가 통과한 뒤에만 다음 클래스를 추가한다.
+
+기본 진행 방식은 다음과 같다.
+
+```text
+클래스 1개 추가
+→ 컴파일 확인
+→ 게임 실행 확인
+→ 정상 로그 확인
+→ 실패 상황 확인
+→ 멀티플레이 테스트
+→ 테스트 통과
+→ 다음 클래스 추가
+```
+
+앞 단계에서 오류가 남아 있는 상태로 다음 클래스를 추가하지 않는다.
+
+각 클래스는 반드시 다음 로그를 포함한다.
+
+1. 초기화 성공 로그
+2. 주요 기능 실행 로그
+3. 기능 거부 사유 로그
+4. 참조 누락 및 예외 로그
+5. 테스트 성공 또는 실패 로그
+
+---
+
+# 2. 공통 로그 규칙
+
+모든 로그는 다음 형식을 사용한다.
+
+```text
+[PTB][클래스명][이벤트코드] 내용
+```
+
+예시:
+
+```text
+[PTB][Plugin][LOAD_OK] Pass The Bomb 모드가 로드되었습니다.
+[PTB][BombController][PASS_OK] Actor 1에서 Actor 2로 폭탄이 전달되었습니다.
+[PTB][BombValidator][PASS_REJECT] reason=PreviousHolder
+[PTB][RespawnService][GROUND_NOT_FOUND] 안전한 부활 지면을 찾지 못했습니다.
+```
+
+로그 단계는 다음과 같이 구분한다.
+
+```text
+Info
+정상 초기화, 상태 변경, 테스트 성공
+
+Warning
+요청 거부, 잘못된 설정값, 일시적인 참조 누락
+
+Error
+기능 진행 불가능, 예외 발생, 필수 객체 누락
+```
+
+## 로그 과다 출력 금지
+
+`Update()`에서 매 프레임 로그를 출력하지 않는다.
+
+폭탄 타이머도 매 프레임 출력하지 않고 다음 시점에만 출력한다.
+
+```text
+타이머 시작
+남은 시간 30초
+남은 시간 10초
+남은 시간 5초
+타이머 종료
+```
+
+네트워크 요청에는 가능한 경우 요청 번호를 넣는다.
+
+```text
+requestId=14
+senderActor=2
+targetActor=3
+```
+
+이를 통해 요청 전송, 호스트 수신, 승인, 전체 동기화 과정을 하나의 번호로 추적한다.
+
+---
+
+# 3. 클래스 구현 순서
+
+## 1단계: PassTheBombPlugin.cs
+
+### 가장 먼저 만들어야 하는 클래스
+
+모드의 진입점이다.
+
+이 클래스가 정상적으로 로드되지 않으면 다른 모든 클래스는 테스트할 수 없다.
+
+### 담당 기능
+
+```text
+BepInEx 플러그인 진입
+모드 로거 보관
+Harmony 생성 및 패치 적용
+게임 종료 시 패치 해제
+씬 변경 이벤트 등록
+전체 시스템 초기화 시작
+```
+
+첫 버전에서는 다른 시스템을 넣지 않는다.
+
+DLL이 PEAK에서 정상적으로 로드되는지만 확인한다.
+
+### 필수 로그
+
+```text
+[PTB][Plugin][AWAKE_BEGIN]
+[PTB][Plugin][LOAD_OK]
+[PTB][Plugin][HARMONY_OK]
+[PTB][Plugin][SCENE_CHANGED]
+[PTB][Plugin][UNLOAD_OK]
+[PTB][Plugin][LOAD_FAIL]
+```
+
+### 테스트 완료 조건
+
+```text
+게임 실행 시 LOAD_OK 출력
+공항 진입 시 SCENE_CHANGED 출력
+게임 종료 시 예외 없음
+플러그인 DLL을 제거하면 로그도 사라짐
+```
+
+이 단계에서는 폭탄, 점수, UI 기능을 만들지 않는다.
+
+---
+
+## 2단계: PTBLog.cs
+
+모든 클래스가 동일한 형식으로 로그를 출력하도록 관리하는 클래스다.
+
+### 담당 기능
+
+```text
+Info 로그
+Warning 로그
+Error 로그
+예외 로그
+디버그 로그 활성화 여부
+반복 로그 제한
+공통 접두사 자동 추가
+```
+
+### 권장 메서드
+
+```text
+Info
+Warning
+Error
+Exception
+Debug
+LogOnce
+LogThrottled
+```
+
+### 필수 로그
+
+```text
+[PTB][Log][INIT_OK]
+[PTB][Log][SELF_TEST_INFO]
+[PTB][Log][SELF_TEST_WARNING]
+[PTB][Log][SELF_TEST_ERROR]
+```
+
+### 테스트 완료 조건
+
+세 종류의 로그가 BepInEx 콘솔과 로그 파일에 정확한 형식으로 출력되어야 한다.
+
+이 클래스 추가 후 `PassTheBombPlugin`도 `PTBLog`를 사용하도록 수정한다.
+
+---
+
+## 3단계: PassTheBombConfig.cs
+
+조정 가능한 모든 값을 관리한다.
+
+### 담당 설정
+
+```text
+폭탄 전달 거리
+일반 폭탄 제한 시간
+일반 폭발 페널티
+세그먼트 순위 점수
+시간 차 보너스
+정상 결승 점수
+정상 결승 인원별 타이머
+부활 탐색 거리
+로그 상세 출력 여부
+```
+
+게임 설명의 초기 전달 거리는 5m로 설정한다.
+
+### 설정 검증
+
+잘못된 설정값이 들어오면 그대로 사용하지 않는다.
+
+예시:
+
+```text
+전달 거리 0 이하
+폭탄 타이머 0 이하
+순위 점수 배열 부족
+부활 탐색 거리 음수
+```
+
+### 필수 로그
+
+```text
+[PTB][Config][INIT_OK]
+[PTB][Config][VALUE] PassDistance=5
+[PTB][Config][VALUE_INVALID]
+[PTB][Config][DEFAULT_APPLIED]
+```
+
+### 테스트 완료 조건
+
+설정 파일이 생성되고, 값을 변경한 뒤 게임을 다시 실행했을 때 변경된 값이 로그에 출력되어야 한다.
+
+---
+
+# 4. 순수 데이터 및 계산 클래스
+
+## 4단계: PlayerScoreData.cs
+
+플레이어 한 명의 점수와 경기 상태를 보관한다.
+
+Unity 컴포넌트가 아닌 일반 C# 클래스로 만든다.
+
+### 보관 데이터
+
+```text
+ActorNumber
+플레이어 이름
+현재 총점
+일반 등산 점수 합계
+일반 폭발 횟수
+일반 폭발 페널티
+정상 결승 순위
+정상 결승 점수
+세그먼트별 도착 순위
+세그먼트별 도착 시간
+세그먼트별 점수
+생존 여부
+정상 결승 탈락 여부
+```
+
+### 담당 메서드
+
+```text
+경기 데이터 초기화
+세그먼트 결과 기록
+일반 폭발 기록
+정상 순위 기록
+총점 재계산
+데이터 유효성 검사
+```
+
+### 필수 로그
+
+```text
+[PTB][PlayerScoreData][CREATED]
+[PTB][PlayerScoreData][SEGMENT_RECORDED]
+[PTB][PlayerScoreData][EXPLOSION_RECORDED]
+[PTB][PlayerScoreData][TOTAL_RECALCULATED]
+[PTB][PlayerScoreData][INVALID_DATA]
+```
+
+### 단독 테스트
+
+게임 설명의 플레이어 B 예시를 사용한다.
+
+```text
+등산 점수 4,450
+일반 폭발 1회
+폭발 페널티 -500
+정상 점수 +1,500
+예상 최종 점수 5,450
+```
+
+### 테스트 완료 로그
+
+```text
+[PTB][PlayerScoreData][SELF_TEST_PASS] expected=5450 actual=5450
+```
+
+---
+
+## 5단계: BombStateData.cs
+
+현재 폭탄 상태만 보관하는 일반 C# 클래스다.
+
+### 보관 데이터
+
+```text
+현재 보유자 ActorNumber
+직전 보유자 ActorNumber
+남은 시간
+폭탄 활성화 여부
+정상 결승 여부
+현재 라운드
+유효 플레이어 수
+폭탄 상태 변경 번호
+```
+
+### 담당 메서드
+
+```text
+폭탄 상태 초기화
+최초 보유자 설정
+보유자 변경
+타이머 초기화
+폭탄 비활성화
+다음 라운드 시작
+```
+
+### 필수 로그
+
+```text
+[PTB][BombStateData][RESET]
+[PTB][BombStateData][HOLDER_SET]
+[PTB][BombStateData][HOLDER_CHANGED]
+[PTB][BombStateData][TIMER_RESET]
+[PTB][BombStateData][INVALID_TRANSITION]
+```
+
+### 테스트 완료 조건
+
+```text
+최초 보유자 1번
+1번에서 2번으로 전달
+현재 보유자 2번
+직전 보유자 1번
+```
+
+위 상태가 정확히 저장되어야 한다.
+
+---
+
+## 6단계: PassTheBombSession.cs
+
+한 판의 전체 데이터를 보관하는 중앙 세션 클래스다.
+
+싱글톤을 여러 개 만들지 않고, `PassTheBombPlugin`이 하나의 인스턴스만 소유하도록 한다.
+
+### 담당 데이터
+
+```text
+현재 게임 단계
+현재 세그먼트
+PlayerScoreData 목록
+BombStateData
+세그먼트 시작 시간
+정상 결승 상태
+경기 시작 여부
+경기 종료 여부
+```
+
+### 권장 게임 단계
+
+```text
+None
+WaitingForPlayers
+NormalSegment
+BetweenSegments
+WaitingForSummit
+SummitFinal
+Finished
+```
+
+### 담당 기능
+
+```text
+플레이어 등록
+플레이어 제거
+전체 경기 초기화
+세그먼트 초기화
+폭탄 상태 접근
+경기 종료 데이터 고정
+```
+
+### 필수 로그
+
+```text
+[PTB][Session][CREATED]
+[PTB][Session][PLAYER_REGISTERED]
+[PTB][Session][DUPLICATE_PLAYER]
+[PTB][Session][PHASE_CHANGED]
+[PTB][Session][RESET_COMPLETE]
+```
+
+### 테스트 완료 조건
+
+4명의 테스트 플레이어를 등록한 뒤 초기화하면 플레이어 목록과 폭탄 상태가 모두 비워져야 한다.
+
+---
+
+## 7단계: ScoreCalculator.cs
+
+점수 계산만 담당하는 순수 계산 클래스다.
+
+PEAK 캐릭터나 Photon 객체를 직접 참조하지 않는다.
+
+### 담당 기능
+
+```text
+도착 순위 기본점수 계산
+선두와의 시간 차 보너스 계산
+세그먼트 점수 계산
+일반 폭발 페널티 계산
+정상 결승 점수 계산
+최종 점수 계산
+동점 우선순위 비교
+```
+
+### 필수 로그
+
+```text
+[PTB][ScoreCalculator][SEGMENT_SCORE]
+[PTB][ScoreCalculator][TIME_BONUS]
+[PTB][ScoreCalculator][FINAL_SCORE]
+[PTB][ScoreCalculator][TIE_BREAK]
+[PTB][ScoreCalculator][SELF_TEST_FAIL]
+```
+
+### 반드시 수행할 계산 테스트
+
+```text
+플레이어 A 최종 점수 = 3,400
+플레이어 B 최종 점수 = 5,450
+우승자 = 플레이어 B
+```
+
+### 테스트 완료 로그
+
+```text
+[PTB][ScoreCalculator][SELF_TEST_PASS]
+```
+
+이 테스트가 실패하면 네트워크 및 실제 게임 연동으로 넘어가지 않는다.
+
+---
+
+## 8단계: PassTheBombDiagnostics.cs
+
+현재 모드 상태를 한 번에 확인하는 진단 클래스다.
+
+### 담당 기능
+
+```text
+현재 게임 단계 출력
+현재 세그먼트 출력
+등록 플레이어 출력
+현재 폭탄 보유자 출력
+직전 보유자 출력
+남은 시간 출력
+점수 데이터 출력
+현재 권한 보유자 출력
+```
+
+진단 단축키 또는 콘솔 명령을 한 번 실행하면 전체 상태를 출력하도록 한다.
+
+### 필수 로그
+
+```text
+[PTB][Diagnostics][DUMP_BEGIN]
+[PTB][Diagnostics][PLAYER]
+[PTB][Diagnostics][BOMB]
+[PTB][Diagnostics][SESSION]
+[PTB][Diagnostics][DUMP_END]
+```
+
+실제 오류가 생겼을 때 사용자가 이 로그 전체를 제공하면 현재 상태를 재구성할 수 있어야 한다.
+
+---
+
+# 5. PEAK 및 Photon 연동 클래스
+
+## 9단계: AuthorityService.cs
+
+어느 클라이언트가 폭탄과 점수를 확정할 권한을 가지는지 판단한다.
+
+### 담당 기능
+
+```text
+현재 마스터 클라이언트 확인
+로컬 클라이언트의 권한 여부 확인
+권한 없는 상태 변경 차단
+마스터 클라이언트 변경 감지
+새 마스터에게 상태 인계 요청
+```
+
+### 필수 로그
+
+```text
+[PTB][Authority][MASTER_DETECTED]
+[PTB][Authority][AUTHORIZED]
+[PTB][Authority][UNAUTHORIZED_REQUEST]
+[PTB][Authority][MASTER_SWITCHED]
+[PTB][Authority][MIGRATION_REQUIRED]
+```
+
+### 테스트 완료 조건
+
+호스트와 클라이언트 로그에 동일한 마스터 ActorNumber가 표시되어야 한다.
+
+클라이언트가 직접 점수를 변경하려 하면 거부 로그가 출력되어야 한다.
+
+---
+
+## 10단계: PlayerRegistryService.cs
+
+현재 게임에 참가 중인 PEAK 플레이어와 `PlayerScoreData`를 연결한다.
+
+### 담당 기능
+
+```text
+Character 검색
+ActorNumber와 Character 연결
+플레이어 이름 저장
+플레이어 참가 감지
+플레이어 이탈 감지
+Character 재생성 시 참조 갱신
+유효 플레이어 목록 반환
+```
+
+### 필수 로그
+
+```text
+[PTB][PlayerRegistry][SCAN_BEGIN]
+[PTB][PlayerRegistry][PLAYER_FOUND]
+[PTB][PlayerRegistry][PLAYER_JOINED]
+[PTB][PlayerRegistry][PLAYER_LEFT]
+[PTB][PlayerRegistry][CHARACTER_MISSING]
+[PTB][PlayerRegistry][SCAN_COMPLETE]
+```
+
+### 테스트 완료 조건
+
+1인 게임에서는 1명, 2인 멀티플레이에서는 양쪽 모두 동일한 ActorNumber 목록이 출력되어야 한다.
+
+---
+
+## 11단계: SegmentFlowService.cs
+
+현재 PEAK 세그먼트를 감지하고 게임 단계를 전환한다.
+
+### 담당 기능
+
+```text
+공항 제외
+해안 시작 감지
+일반 세그먼트 변경 감지
+가마 종료 감지
+정상 진입 감지
+세그먼트 시작 시간 기록
+```
+
+### 필수 로그
+
+```text
+[PTB][SegmentFlow][SCENE_IGNORED] scene=Airport
+[PTB][SegmentFlow][SEGMENT_DETECTED]
+[PTB][SegmentFlow][SEGMENT_STARTED]
+[PTB][SegmentFlow][SEGMENT_CHANGED]
+[PTB][SegmentFlow][SUMMIT_DETECTED]
+[PTB][SegmentFlow][UNKNOWN_SEGMENT]
+```
+
+### 테스트 완료 조건
+
+맵을 이동할 때 같은 세그먼트 시작 로그가 중복 출력되지 않아야 한다.
+
+---
+
+## 12단계: CampfireZoneService.cs
+
+플레이어가 모닥불 영역 안에 있는지 관리한다.
+
+### 담당 기능
+
+```text
+모닥불 진입 감지
+모닥불 이탈 감지
+폭탄 전달 금지 상태 설정
+중복 Trigger 호출 방지
+플레이어별 모닥불 상태 보관
+```
+
+### 필수 로그
+
+```text
+[PTB][CampfireZone][ENTER]
+[PTB][CampfireZone][EXIT]
+[PTB][CampfireZone][PASS_BLOCKED]
+[PTB][CampfireZone][DUPLICATE_TRIGGER_IGNORED]
+[PTB][CampfireZone][PLAYER_NOT_FOUND]
+```
+
+### 테스트 완료 조건
+
+모닥불 안에서 전달 요청을 하면 `PASS_BLOCKED`가 출력되고, 밖으로 나오면 다시 전달 가능한 상태가 되어야 한다.
+
+---
+
+## 13단계: SegmentScoreService.cs
+
+모닥불 도착 순위와 시간 차를 기록하고 점수를 확정한다.
+
+### 담당 기능
+
+```text
+첫 도착자 시간 기록
+도착 순위 부여
+중복 도착 차단
+선두와의 시간 차 계산
+ScoreCalculator 호출
+PlayerScoreData 갱신
+랭킹 갱신 이벤트 발생
+```
+
+### 필수 로그
+
+```text
+[PTB][SegmentScore][ARRIVAL_RECORDED]
+[PTB][SegmentScore][FIRST_ARRIVAL]
+[PTB][SegmentScore][DUPLICATE_ARRIVAL]
+[PTB][SegmentScore][SCORE_CONFIRMED]
+[PTB][SegmentScore][SEGMENT_MISMATCH]
+```
+
+### 테스트 완료 조건
+
+테스트 플레이어가 순서대로 모닥불에 들어왔을 때 순위와 시간 보너스가 정확해야 한다.
+
+---
+
+# 6. 폭탄 핵심 클래스
+
+## 14단계: BombTargetValidator.cs
+
+폭탄을 전달할 수 있는 대상인지 판정한다.
+
+실제 폭탄 상태를 변경하지 않고 결과와 거부 사유만 반환한다.
+
+### 검증 항목
+
+```text
+요청자가 현재 폭탄 보유자인가
+대상이 존재하는가
+대상이 본인이 아닌가
+전달 거리 이내인가
+대상이 사망 또는 부활 중이 아닌가
+대상이 정상 결승 탈락자가 아닌가
+대상이 보호 상태가 아닌가
+대상이 모닥불 영역 안이 아닌가
+3명 이상일 때 직전 전달자가 아닌가
+유효 플레이어가 2명일 때 역패스 예외 적용
+```
+
+### 거부 사유 코드 예시
+
+```text
+NotCurrentHolder
+TargetNotFound
+SamePlayer
+TooFar
+Dead
+Respawning
+SummitEliminated
+Protected
+CampfireBlocked
+PreviousHolderBlocked
+```
+
+### 필수 로그
+
+```text
+[PTB][BombValidator][PASS_ALLOWED]
+[PTB][BombValidator][PASS_REJECT] reason=TooFar
+[PTB][BombValidator][PASS_REJECT] reason=PreviousHolderBlocked
+[PTB][BombValidator][VALID_PLAYER_COUNT]
+```
+
+### 테스트 완료 조건
+
+3명 상태에서는 직전 전달자에게 역패스가 거부되고, 2명 상태에서는 허용되어야 한다.
+
+---
+
+## 15단계: BombController.cs
+
+호스트가 관리하는 폭탄의 핵심 상태 관리자다.
+
+### 담당 기능
+
+```text
+최초 폭탄 보유자 선정
+폭탄 활성화
+폭탄 타이머 시작
+폭탄 전달 승인
+보유자 변경
+타이머 만료 감지
+폭탄 라운드 종료
+상태 변경 번호 증가
+```
+
+첫 버전에서는 타이머가 끝났을 때 실제 플레이어를 죽이지 않고 폭발 예정 로그만 출력한다.
+
+### 필수 로그
+
+```text
+[PTB][BombController][ACTIVATED]
+[PTB][BombController][INITIAL_HOLDER]
+[PTB][BombController][PASS_REQUEST]
+[PTB][BombController][PASS_OK]
+[PTB][BombController][PASS_REJECT]
+[PTB][BombController][TIMER_EXPIRED]
+[PTB][BombController][DEACTIVATED]
+```
+
+### 테스트 완료 조건
+
+호스트 로컬 테스트에서 폭탄 보유자와 직전 보유자가 정확히 바뀌고 타이머가 한 번만 종료되어야 한다.
+
+---
+
+## 16단계: BombNetworkService.cs
+
+클라이언트의 전달 요청을 호스트에게 보내고, 확정 결과를 모든 클라이언트에 동기화한다.
+
+네트워크 요청 구조체는 이 클래스 안에 중첩해도 된다.
+
+### 담당 메시지
+
+```text
+폭탄 전달 요청
+폭탄 전달 승인
+폭탄 전달 거부
+폭탄 상태 전체 동기화
+폭탄 라운드 시작
+폭탄 폭발 확정
+신규 참가자 상태 요청
+```
+
+### 중요 원칙
+
+클라이언트는 폭탄 보유자를 직접 변경하지 않는다.
+
+```text
+클라이언트 요청
+→ 호스트 검증
+→ 호스트 상태 변경
+→ 전체 클라이언트에 확정 상태 전송
+```
+
+### 필수 로그
+
+```text
+[PTB][BombNetwork][REQUEST_TX]
+[PTB][BombNetwork][REQUEST_RX]
+[PTB][BombNetwork][ACK_TX]
+[PTB][BombNetwork][ACK_RX]
+[PTB][BombNetwork][STATE_SYNC]
+[PTB][BombNetwork][STALE_STATE_IGNORED]
+[PTB][BombNetwork][MESSAGE_ERROR]
+```
+
+### 테스트 완료 조건
+
+2인 환경에서 클라이언트가 요청한 전달이 호스트에서 승인되고 양쪽 화면의 현재 보유자 값이 같아야 한다.
+
+---
+
+## 17단계: BombInputController.cs
+
+로컬 플레이어의 E키 입력과 전달 대상 선택을 담당한다.
+
+### 담당 기능
+
+```text
+E키 입력 감지
+5m 이내 후보 검색
+유효 후보 선택
+후보가 여러 명일 때 가장 가까운 대상 선택
+BombNetworkService에 전달 요청
+```
+
+이 클래스는 폭탄 상태를 직접 변경하지 않는다.
+
+### 필수 로그
+
+```text
+[PTB][BombInput][E_PRESSED]
+[PTB][BombInput][TARGET_SELECTED]
+[PTB][BombInput][NO_TARGET]
+[PTB][BombInput][NOT_HOLDER]
+[PTB][BombInput][REQUEST_SENT]
+```
+
+### 테스트 완료 조건
+
+E키를 누르지 않을 때 요청이 발생하지 않아야 하며, 한 번 눌렀을 때 요청도 한 번만 전송되어야 한다.
+
+---
+
+## 18단계: BombPresentationController.cs
+
+폭탄의 시각·청각 표현만 담당한다.
+
+게임 판정에는 관여하지 않는다.
+
+### 담당 기능
+
+```text
+현재 보유자에게 폭탄 모델 표시
+이전 보유자에서 폭탄 모델 제거
+폭탄 아이콘 갱신
+타이머 사운드
+폭발 직전 경고 연출
+폭탄 상태가 비활성일 때 숨김
+```
+
+### 필수 로그
+
+```text
+[PTB][BombPresentation][ATTACHED]
+[PTB][BombPresentation][DETACHED]
+[PTB][BombPresentation][WARNING_STARTED]
+[PTB][BombPresentation][MODEL_MISSING]
+[PTB][BombPresentation][AUDIO_MISSING]
+```
+
+### 테스트 완료 조건
+
+폭탄을 전달했을 때 이전 플레이어에게서 사라지고 새 보유자에게 한 개만 표시되어야 한다.
+
+---
+
+## 19단계: BombExplosionService.cs
+
+타이머가 종료되었을 때 실제 폭발 처리를 담당한다.
+
+### 담당 기능
+
+```text
+현재 폭탄 보유자 확인
+폭발 위치 기록
+일반 구간과 정상 결승 구분
+일반 폭발 페널티 적용
+플레이어 사망 처리 요청
+폭탄 상태 비활성화
+부활 또는 정상 탈락 처리로 연결
+```
+
+### 필수 로그
+
+```text
+[PTB][BombExplosion][EXPLOSION_BEGIN]
+[PTB][BombExplosion][HOLDER_CONFIRMED]
+[PTB][BombExplosion][PENALTY_APPLIED]
+[PTB][BombExplosion][DEATH_REQUESTED]
+[PTB][BombExplosion][NO_HOLDER]
+[PTB][BombExplosion][EXPLOSION_COMPLETE]
+```
+
+### 테스트 완료 조건
+
+한 번의 타이머 종료에 폭발 횟수와 페널티가 정확히 한 번만 증가해야 한다.
+
+---
+
+## 20단계: SafeRespawnService.cs
+
+일반 세그먼트 폭발자의 안전한 부활 위치를 찾는다.
+
+### 담당 기능
+
+```text
+폭발 당시 레그돌 위치 저장
+주변 지면 탐색
+경사도 검사
+낭떠러지 검사
+충돌 공간 검사
+가장 가까운 안전 위치 선택
+최종 대체 위치 적용
+```
+
+### 필수 로그
+
+```text
+[PTB][SafeRespawn][SEARCH_BEGIN]
+[PTB][SafeRespawn][CANDIDATE_FOUND]
+[PTB][SafeRespawn][CANDIDATE_REJECTED]
+[PTB][SafeRespawn][SAFE_POSITION_SELECTED]
+[PTB][SafeRespawn][FALLBACK_USED]
+[PTB][SafeRespawn][RESPAWN_COMPLETE]
+```
+
+### 테스트 완료 조건
+
+폭발 위치가 경사면, 절벽 근처, 평지일 때 모두 테스트한다.
+
+안전 위치를 찾지 못하더라도 NullReferenceException이 발생해서는 안 된다.
+
+---
+
+# 7. 정상 결승 클래스
+
+## 21단계: SummitFinalController.cs
+
+정상 결승 전체 진행을 관리한다.
+
+### 담당 기능
+
+```text
+정상 도착 플레이어 확인
+조명탄 완료 인원 확인
+결승 시작
+랜덤 최초 보유자 선정
+생존 인원별 타이머 설정
+폭발자 탈락 처리
+결승 순위 확정
+다음 폭탄 라운드 시작
+최후의 생존자 확정
+```
+
+### 필수 로그
+
+```text
+[PTB][Summit][PLAYER_READY]
+[PTB][Summit][READY_COUNT]
+[PTB][Summit][FINAL_STARTED]
+[PTB][Summit][ROUND_STARTED]
+[PTB][Summit][PLAYER_ELIMINATED]
+[PTB][Summit][RANK_CONFIRMED]
+[PTB][Summit][WINNER_CONFIRMED]
+```
+
+### 테스트 완료 조건
+
+4명 기준으로 탈락 순서가 다음처럼 기록되어야 한다.
+
+```text
+첫 폭발자 4등
+두 번째 폭발자 3등
+세 번째 폭발자 2등
+마지막 생존자 1등
+```
+
+---
+
+# 8. 랭킹 및 결과 UI 클래스
+
+## 22단계: RankingService.cs
+
+호스트가 확정한 점수 데이터를 정렬하여 랭킹 스냅샷을 만든다.
+
+### 담당 기능
+
+```text
+현재 총점 정렬
+일반 구간 동점 처리
+최종 동점 처리
+폭탄 보유 여부 반영
+UI용 읽기 전용 데이터 생성
+랭킹 변경 이벤트 발생
+```
+
+매 프레임 정렬하지 않는다.
+
+다음 이벤트에서만 갱신한다.
+
+```text
+세그먼트 점수 확정
+일반 폭발
+정상 순위 확정
+최종 점수 확정
+폭탄 보유자 변경
+```
+
+### 필수 로그
+
+```text
+[PTB][Ranking][RECALCULATE_BEGIN]
+[PTB][Ranking][RANK_CHANGED]
+[PTB][Ranking][TIE_BREAK_APPLIED]
+[PTB][Ranking][SNAPSHOT_CREATED]
+[PTB][Ranking][NO_PLAYERS]
+```
+
+---
+
+## 23단계: RankingUIController.cs
+
+화면 우측 상단의 실시간 랭킹 UI만 담당한다.
+
+점수를 직접 계산하지 않는다.
+
+### 표시 항목
+
+```text
+현재 순위
+플레이어 이름
+현재 총점
+폭탄 아이콘
+로컬 플레이어 강조
+```
+
+### 필수 로그
+
+```text
+[PTB][RankingUI][CREATED]
+[PTB][RankingUI][ROW_CREATED]
+[PTB][RankingUI][UPDATED]
+[PTB][RankingUI][BOMB_ICON_MOVED]
+[PTB][RankingUI][REFERENCE_MISSING]
+```
+
+### 테스트 완료 조건
+
+호스트와 클라이언트에서 같은 순위와 점수가 표시되어야 한다.
+
+폭탄 전달 시 전체 점수를 다시 계산하지 않고 폭탄 아이콘만 이동해야 한다.
+
+---
+
+## 24단계: ScoutReportIntegration.cs
+
+게임 종료 후 기존 스카우트 보고서에 최종 결과표를 추가한다.
+
+### 표시 항목
+
+```text
+최종 순위
+플레이어 이름
+일반 등산 점수
+일반 폭발 횟수
+폭발 페널티
+정상 결승 순위
+정상 결승 점수
+최종 점수
+```
+
+### 필수 로그
+
+```text
+[PTB][ScoutReport][REPORT_FOUND]
+[PTB][ScoutReport][TABLE_CREATED]
+[PTB][ScoutReport][ROW_ADDED]
+[PTB][ScoutReport][FINAL_DATA_FROZEN]
+[PTB][ScoutReport][REPORT_NOT_FOUND]
+```
+
+### 테스트 완료 조건
+
+결과표의 플레이어 수와 실제 참가자 수가 같아야 하며, 실시간 임시 점수가 아니라 최종 확정 점수를 사용해야 한다.
+
+---
+
+# 9. 전체 생명주기 클래스
+
+## 25단계: SessionLifecycleController.cs
+
+경기 시작부터 종료까지 모든 서비스의 초기화와 정리를 연결한다.
+
+가장 마지막에 만든다.
+
+초기에 이 클래스를 먼저 만들면 아직 존재하지 않는 시스템들이 서로 얽혀 원인을 찾기 어렵다.
+
+### 담당 기능
+
+```text
+공항에서는 모드 비활성
+경기 시작 시 세션 초기화
+플레이어 등록 시작
+첫 세그먼트 시작
+세그먼트 변경 처리
+정상 결승 진입
+경기 종료
+최종 데이터 고정
+씬 이동 시 UI 제거
+호스트 이탈 처리
+모든 이벤트 구독 해제
+```
+
+### 필수 로그
+
+```text
+[PTB][Lifecycle][RUN_START]
+[PTB][Lifecycle][SERVICES_READY]
+[PTB][Lifecycle][SEGMENT_TRANSITION]
+[PTB][Lifecycle][RUN_FINISHED]
+[PTB][Lifecycle][CLEANUP_BEGIN]
+[PTB][Lifecycle][CLEANUP_COMPLETE]
+[PTB][Lifecycle][SUBSCRIPTION_LEAK_DETECTED]
+```
+
+### 테스트 완료 조건
+
+게임을 두 판 연속 실행했을 때 이전 판의 다음 데이터가 남아 있으면 안 된다.
+
+```text
+폭탄 보유자
+직전 전달자
+폭발 횟수
+세그먼트 순위
+정상 탈락 상태
+UI 오브젝트
+이벤트 구독
+```
+
+---
+
+# 10. 최종 클래스 순서 요약
+
+```text
+01. PassTheBombPlugin
+02. PTBLog
+03. PassTheBombConfig
+04. PlayerScoreData
+05. BombStateData
+06. PassTheBombSession
+07. ScoreCalculator
+08. PassTheBombDiagnostics
+09. AuthorityService
+10. PlayerRegistryService
+11. SegmentFlowService
+12. CampfireZoneService
+13. SegmentScoreService
+14. BombTargetValidator
+15. BombController
+16. BombNetworkService
+17. BombInputController
+18. BombPresentationController
+19. BombExplosionService
+20. SafeRespawnService
+21. SummitFinalController
+22. RankingService
+23. RankingUIController
+24. ScoutReportIntegration
+25. SessionLifecycleController
+```
+
+---
+
+# 11. 단계별 테스트 원칙
+
+각 단계는 다음 조건을 모두 만족해야 완료로 판단한다.
+
+```text
+Visual Studio 컴파일 오류 없음
+게임 실행 가능
+필수 초기화 로그 출력
+정상 기능 로그 출력
+실패 상황에서 거부 사유 출력
+NullReferenceException 없음
+같은 이벤트의 중복 실행 없음
+호스트와 클라이언트 상태 일치
+게임 재시작 후 이전 데이터가 남지 않음
+```
+
+첫 번째 실제 구현 대상은 반드시 다음 하나다.
+
+```text
+PassTheBombPlugin.cs
+```
+
+이 클래스에서 모드 로드와 로그 출력만 먼저 확인한 뒤 `PTBLog.cs`로 넘어간다.
